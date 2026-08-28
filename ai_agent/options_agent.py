@@ -56,7 +56,7 @@ class OptionsExecutionAgent:
         try:
             for order in orders:
                 # Strict Hackathon Compliance: Alpaca CLI usage with positional symbol
-                cmd = f"alpaca order submit {order['symbol']} -q {order['qty']} --side {order['side']} --type market --tif day"
+                cmd = f"alpaca order submit {order['symbol']} -q {order['qty']} --side {order['side']} --type market --time-in-force day"
                 self._run_cli(cmd)
                 executed_symbols.append(order['symbol'])
                 self.logger.info(f"SUCCESS (CLI): {order['side'].upper()} order submitted for {order['symbol']}, Qty: {order['qty']}")
