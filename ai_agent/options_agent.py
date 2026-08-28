@@ -55,8 +55,8 @@ class OptionsExecutionAgent:
         executed_symbols = []
         try:
             for order in orders:
-                # Strict Hackathon Compliance: Alpaca CLI usage with positional symbol
-                cmd = f"alpaca order submit {order['symbol']} -q {order['qty']} --side {order['side']} --type market --time-in-force day"
+                # Strict Hackathon Compliance: Alpaca CLI usage with explicit --symbol flag
+                cmd = f"alpaca order submit --symbol {order['symbol']} --qty {order['qty']} --side {order['side']} --type market --time-in-force day"
                 self._run_cli(cmd)
                 executed_symbols.append(order['symbol'])
                 self.logger.info(f"SUCCESS (CLI): {order['side'].upper()} order submitted for {order['symbol']}, Qty: {order['qty']}")
@@ -64,5 +64,6 @@ class OptionsExecutionAgent:
         except Exception as e:
             self.logger.error(f"ATOMICITY FAILURE. Initiating Rollback. Error: {str(e).strip()}")
             for symbol in executed_symbols:
-                self._run_cli(f"alpaca order cancel {symbol}")
+                # Asegurar también la bandera explícita en el Rollback
+                self._run_cli(f"alpaca order cancel --symbol {symbol}")
             raise RuntimeError("Transactional block aborted to prevent asymmetric directional exposure.")
