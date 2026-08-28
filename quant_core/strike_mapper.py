@@ -7,37 +7,37 @@ class VolatilityCartographer:
         self.dte = target_dte
         
         # Proyección del movimiento esperado asumiendo caminata aleatoria (Random Walk)
-        # Volatilidad en el periodo = Volatilidad Diaria * Raíz(Días)
         self.expected_move_pct = self.vol * np.sqrt(self.dte)
         self.expected_move_usd = self.S * self.expected_move_pct
 
     def map_iron_condor_strikes(self):
         """
-        Estructura defensiva: 
-        Vende riesgo a 1 Desviación Estándar (captura prima).
-        Compra protección a 1.5 Desviaciones Estándar (limita pérdida máxima).
+        Estructura defensiva con integración estricta de signos institucionales:
+        - Long Put (Compra protección): 1.5 DE abajo (sign: 1)
+        - Short Put (Vende riesgo): 1 DE abajo (sign: -1)
+        - Short Call (Vende riesgo): 1 DE arriba (sign: -1)
+        - Long Call (Compra protección): 1.5 DE arriba (sign: 1)
         """
-        short_put = self.S - self.expected_move_usd
-        long_put = self.S - (1.5 * self.expected_move_usd)
-        
-        short_call = self.S + self.expected_move_usd
-        long_call = self.S + (1.5 * self.expected_move_usd)
+        long_put = round(self.S - (1.5 * self.expected_move_usd), 0)
+        short_put = round(self.S - self.expected_move_usd, 0)
+        short_call = round(self.S + self.expected_move_usd, 0)
+        long_call = round(self.S + (1.5 * self.expected_move_usd), 0)
 
-        # Redondeamos al entero más cercano, ya que los strikes de SPY suelen ir de 1 en 1
-        return {
-            "long_put": round(long_put, 0),
-            "short_put": round(short_put, 0),
-            "short_call": round(short_call, 0),
-            "long_call": round(long_call, 0)
-        }
+        return [
+            {"type": "put", "side": "buy", "sign": 1, "target_strike": long_put},
+            {"type": "put", "side": "sell", "sign": -1, "target_strike": short_put},
+            {"type": "call", "side": "sell", "sign": -1, "target_strike": short_call},
+            {"type": "call", "side": "buy", "sign": 1, "target_strike": long_call}
+        ]
 
     def map_straddle_strikes(self):
         """
-        Estructura ofensiva:
-        Captura expansión de varianza operando At-The-Money (ATM).
+        Estructura ofensiva At-The-Money (ATM) para captura de expansión de varianza:
+        - Long Call (sign: 1)
+        - Long Put (sign: 1)
         """
         atm_strike = round(self.S, 0)
-        return {
-            "long_call": atm_strike,
-            "long_put": atm_strike
-        }
+        return [
+            {"type": "call", "side": "buy", "sign": 1, "target_strike": atm_strike},
+            {"type": "put", "side": "buy", "sign": 1, "target_strike": atm_strike}
+        ]

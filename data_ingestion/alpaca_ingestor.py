@@ -1,13 +1,14 @@
 import os
 import numpy as np
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
+from alpaca.trading.enums import ContractType
 
 load_dotenv()
 
@@ -55,65 +56,43 @@ class OptionsContractResolver(AlpacaCredentials):
         self.underlying_ticker = underlying_ticker.upper()
         self.trading_client = TradingClient(self.api_key, self.api_secret, paper=True)
 
-    def get_valid_occ_symbol(self, target_strike: float, option_type: str, target_dte: int = 30) -> str:
+    def get_valid_occ_symbol(self, target_strike: float, option_type: str, exclude_symbols: set = None) -> str:
+        exclude_symbols = exclude_symbols or set()
+        hoy = datetime.now().date()
+        
+        # Exigir vencimiento mínimo de 3 días para evitar bloqueos por expiración inminente
+        min_exp = hoy + timedelta(days=3)
+        contract_type_enum = ContractType.PUT if option_type.lower() == 'put' else ContractType.CALL
+        
+        # Petición optimizada directamente al servidor de Alpaca
         req = GetOptionContractsRequest(
             underlying_symbols=[self.underlying_ticker],
-            status="active"
+            status="active",
+            type=contract_type_enum,
+            expiration_date_gte=min_exp.strftime('%Y-%m-%d')
         )
-        contracts = self.trading_client.get_option_contracts(req)
+        res = self.trading_client.get_option_contracts(req)
+        contracts = res.option_contracts
         
-        if not contracts.option_contracts:
-            raise RuntimeError(f"BLOQUEO DE BRÓKER: Alpaca devolvió 0 contratos totales para {self.underlying_ticker}.")
+        # Respaldo de emergencia si el servidor no retorna contratos con el filtro estricto de fecha
+        if not contracts:
+            req_fallback = GetOptionContractsRequest(
+                underlying_symbols=[self.underlying_ticker],
+                status="active",
+                type=contract_type_enum
+            )
+            res_fallback = self.trading_client.get_option_contracts(req_fallback)
+            contracts = res_fallback.option_contracts
             
-        hoy = datetime.now().date()
+        if not contracts:
+            raise RuntimeError(f"BLOQUEO DE BRÓKER: Cero contratos {option_type.upper()} disponibles para {self.underlying_ticker}.")
+            
         contratos_validos = []
-        target_char = 'P' if option_type.lower() == 'put' else 'C'
-        
-        for c in contracts.option_contracts:
+        for c in contracts:
             symbol = str(c.symbol)
-            
-            # Validación por subyacente estricta
-            if not symbol.startswith(self.underlying_ticker):
+            if symbol in exclude_symbols:
                 continue
                 
-            # Identificación segura de Call/Put mediante atributos o lectura directa del símbolo OCC
-            tipo_contrato = getattr(c, 'type', None) or getattr(c, 'option_type', None) or getattr(c, 'right', None)
-            tipo_str = str(tipo_contrato).upper()
-            
-            match_tipo = False
-            if option_type.lower() in tipo_str.lower():
-                match_tipo = True
-            elif target_char in symbol:
-                # El formato OCC estándar incluye 'P' o 'C' antes del strike
-                match_tipo = True
-                
-            if not match_tipo:
-                continue
-                
-            # Extracción de fecha de expiración robusta
-            exp_raw = getattr(c, 'expiration_date', None)
-            exp_date = None
-            if isinstance(exp_raw, date):
-                exp_date = exp_raw
-            elif exp_raw:
-                try:
-                    exp_date = datetime.strptime(str(exp_raw)[:10], '%Y-%m-%d').date()
-                except Exception:
-                    pass
-            
-            # Si el SDK no trae la fecha limpia, intentamos parsearla de los dígitos del símbolo OCC (YYMMDD)
-            if not exp_date and len(symbol) >= len(self.underlying_ticker) + 6:
-                try:
-                    date_str = symbol[len(self.underlying_ticker):len(self.underlying_ticker)+6]
-                    exp_date = datetime.strptime(date_str, '%y%m%d').date()
-                except Exception:
-                    continue
-
-            if not exp_date:
-                continue
-                
-            dte = (exp_date - hoy).days
-            
             # Extracción del Strike
             strike = getattr(c, 'strike_price', None)
             if strike is not None:
@@ -122,31 +101,42 @@ class OptionsContractResolver(AlpacaCredentials):
                 except:
                     strike = None
             
-            if strike is None and len(symbol) > 8:
+            if strike is None and len(symbol) >= 8:
                 try:
-                    # Últimos 8 dígitos del símbolo OCC representan el strike multiplicado por 1000
                     strike = float(symbol[-8:]) / 1000.0
-                except Exception:
+                except:
                     continue
+            
+            if strike is None:
+                continue
+                
+            # Cálculo de DTE
+            exp_raw = getattr(c, 'expiration_date', None)
+            dte = 30
+            if exp_raw:
+                try:
+                    exp_date = exp_raw if isinstance(exp_raw, date) else datetime.strptime(str(exp_raw)[:10], '%Y-%m-%d').date()
+                    dte = (exp_date - hoy).days
+                except:
+                    pass
 
-            if dte >= 0 and strike is not None:
-                contratos_validos.append({
-                    'symbol': symbol,
-                    'strike': strike,
-                    'dte': dte
-                })
+            contratos_validos.append({
+                'symbol': symbol,
+                'strike': strike,
+                'dte': abs(dte)
+            })
                 
         if not contratos_validos:
-            raise RuntimeError(f"Fallo de liquidez: Cero contratos {option_type} válidos tras el barrido resiliente de memoria.")
+            raise RuntimeError(f"Fallo de asignación: Imposible mapear contratos {option_type.upper()} limpios de colisión.")
             
         df = pd.DataFrame(contratos_validos)
         
-        # Selección de la expiración más cercana disponible en el simulador
-        min_dte = df['dte'].min()
-        df_optimos_dte = df[df['dte'] == min_dte].copy()
+        # Snapping institucional: Priorizar la menor distancia al strike teórico calculado por GARCH
+        df['distancia'] = abs(df['strike'] - target_strike)
+        df = df.sort_values(['distancia', 'dte'])
         
-        # Selección del strike más cercano al objetivo proyectado por GARCH
-        df_optimos_dte['distancia_strike'] = abs(df_optimos_dte['strike'] - target_strike)
-        contrato_optimo = df_optimos_dte.loc[df_optimos_dte['distancia_strike'].idxmin()]
-        
-        return contrato_optimo['symbol']
+        for _, row in df.iterrows():
+            if row['symbol'] not in exclude_symbols:
+                return row['symbol']
+                
+        return df.iloc[0]['symbol']
