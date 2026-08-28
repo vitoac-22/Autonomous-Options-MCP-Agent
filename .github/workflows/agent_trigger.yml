@@ -22,9 +22,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Alpaca CLI on Runner
-        run: curl -sL https://alpaca.markets/cli/install.sh | bash
-
       - name: Execute Autonomous Trading Pipeline
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
