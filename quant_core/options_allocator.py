@@ -24,6 +24,6 @@ class DeltaNeutralOptimizer:
         ]
         
         problem = cp.Problem(objective, constraints)
-        problem.solve(solver=cp.ECOS_BB) 
+        problem.solve()
         
         return [int(val) for val in w.value]
