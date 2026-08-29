@@ -6,6 +6,9 @@ on:
     - cron: '45 19 * * 1-5'
   workflow_dispatch: 
 
+permissions:
+  contents: write        # required to commit the decision journal back
+
 jobs:
   run-alpha-pipeline:
     runs-on: ubuntu-latest
@@ -29,3 +32,19 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET }}
           FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
         run: python main_pipeline.py
+
+      # The runner is destroyed when the job ends, so the decision journal has
+      # to be committed back or the dashboard can never see it. This is what
+      # makes the telemetry panel work in production.
+      - name: Persist decision journal
+        if: always()
+        run: |
+          if [ -n "$(git status --porcelain data/)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add data/
+            git commit -m "chore: record agent decisions [skip ci]"
+            git push
+          else
+            echo "No new decisions to record."
+          fi
