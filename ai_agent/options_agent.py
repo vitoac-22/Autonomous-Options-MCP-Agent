@@ -21,38 +21,41 @@ class OptionsExecutionAgent:
             "Content-Type": "application/json"
         }
 
+    def submit_mleg_payload(self, payload: dict):
+        """Send a prebuilt multi-leg order.
+
+        The payload comes from ai_agent.mleg_payload, which is a pure function
+        and unit-tested. Building it here inline was how the order ended up
+        missing the top-level `qty` and per-leg `position_intent` that Alpaca
+        requires for order_class="mleg" — the reason every attempt was rejected
+        422 — and how leg ratios got truncated by integer division.
+
+        Atomicity is the broker's: an mleg order fills as one unit or not at
+        all, so there is no partial-fill window and no rollback to get wrong.
+        """
+        self.logger.info(f"Submitting atomic MLEG order: qty={payload.get('qty')} "
+                         f"legs={len(payload.get('legs', []))} "
+                         f"limit={payload.get('limit_price', 'market')}")
+        response = requests.post(f"{self.base_url}/orders",
+                                 json=payload, headers=self.headers, timeout=30)
+
+        if response.status_code in (200, 201):
+            order_id = response.json().get("id")
+            self.logger.info(f"ACCEPTED by broker. Order ID: {order_id}")
+            return order_id
+
+        self.logger.error(f"BROKER REJECTED: {response.status_code} {response.text}")
+        raise RuntimeError(f"Alpaca rejected the MLEG order: {response.text}")
+
     def execute_atomic_transaction(self, strategy_payload):
-        legs = strategy_payload.get("legs", [])
-        if not legs:
-            self.logger.info("Sin patas estructurales para operar. Abortando.")
-            return
-
-        base_qty = min(leg.get('qty', 1) for leg in legs)
-        mleg_legs = []
-        for leg in legs:
-            mleg_legs.append({
-                "symbol": leg['symbol'],
-                "ratio_qty": int(leg['qty'] / base_qty),
-                "side": leg['side'].lower()
-            })
-
-        payload = {
-            "order_class": "mleg",
-            "type": "market",
-            "time_in_force": "day",
-            "legs": mleg_legs
-        }
-
-        self.logger.info("Despachando bloque atómico MLEG directamente al motor del bróker...")
-        response = requests.post(f"{self.base_url}/orders", json=payload, headers=self.headers)
-
-        if response.status_code in [200, 201]:
-            order_id = response.json().get('id')
-            self.logger.info(f"=== ÉXITO ESTRUCTURAL === Orden MLEG aceptada. ID: {order_id}")
-        else:
-            error_msg = response.text
-            self.logger.error(f"RECHAZO DE BRÓKER (Rollback automático garantizado): {error_msg}")
-            raise RuntimeError(f"Alpaca rechazó la estructura MLEG: {error_msg}")
+        """Deprecated. Build the payload with mleg_payload.build_mleg_payload and
+        call submit_mleg_payload instead — this path could not construct a valid
+        order."""
+        raise NotImplementedError(
+            "execute_atomic_transaction built an invalid mleg payload (no top-level "
+            "qty, no position_intent, truncated ratios). Use "
+            "ai_agent.mleg_payload.build_mleg_payload() then submit_mleg_payload()."
+        )
 
     def liquidate_portfolio(self, positions):
         """

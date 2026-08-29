@@ -47,6 +47,10 @@ class StrategyConfig:
     core_fraction: float = 0.60
     convex_fraction: float = 0.40
 
+    # Baseline the drawdown floor measures against — the account's starting
+    # balance, not the current session's opening equity.
+    contest_start_equity: float = 100_000.0
+
     def __post_init__(self):
         if self.min_dte > self.max_dte:
             raise ValueError(f"min_dte {self.min_dte} exceeds max_dte {self.max_dte}")
@@ -68,4 +72,5 @@ class StrategyConfig:
             var_threshold=_env_float("VAR_THRESHOLD", cls.var_threshold),
             core_fraction=_env_float("CORE_FRACTION", cls.core_fraction),
             convex_fraction=_env_float("CONVEX_FRACTION", cls.convex_fraction),
+            contest_start_equity=_env_float("CONTEST_START_EQUITY", cls.contest_start_equity),
         )
