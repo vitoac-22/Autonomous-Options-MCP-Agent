@@ -12,6 +12,7 @@ logging.basicConfig(level=logging.WARNING, filename='mcp_silent.log', filemode='
 from data_ingestion.alpaca_ingestor import UnderlyingIngestor, OptionsContractResolver
 from quant_core.garch_engine import GarchVolatilityEngine
 from quant_core.exit_engine import PortfolioRiskManager
+from ai_agent.execution_bridge import verify_approval, ApprovalMismatch
 
 # Initialize standard v2.x MCP Server
 mcp = MCPServer("AlphaOptionsAgent")
@@ -85,28 +86,36 @@ def get_volatility_regime() -> str:
         return f"Critical GARCH engine error: {str(e)}"
 
 @mcp.tool()
-def dispatch_mleg_order(payload_json: str) -> str:
+def dispatch_mleg_order(payload_json: str, approval_hash: str = "") -> str:
     """
-    Receives a stringified JSON MLEG payload and dispatches it to Alpaca.
-    This tool isolates the execution layer behind the MCP protocol.
+    Dispatch a risk-gate-approved multi-leg order to Alpaca.
+
+    The payload is verified against the approval hash issued by the risk gates
+    before anything is sent. The calling LLM authors these arguments, so without
+    that check it could alter strikes, sides, ratios or quantities after the
+    gates had approved a different structure. The system prompt asks it not to;
+    this makes it impossible.
     """
     try:
-        payload = json.loads(payload_json)
+        payload = verify_approval(payload_json, approval_hash)
+    except ApprovalMismatch as exc:
+        return json.dumps({"status": "refused", "error": str(exc)})
+
+    try:
         headers = {
             "APCA-API-KEY-ID": os.getenv("ALPACA_API_KEY"),
             "APCA-API-SECRET-KEY": os.getenv("ALPACA_API_SECRET") or os.getenv("ALPACA_SECRET_KEY"),
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
-        url = "https://paper-api.alpaca.markets/v2/orders"
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
+        response = requests.post("https://paper-api.alpaca.markets/v2/orders",
+                                 json=payload, headers=headers, timeout=30)
+
         if response.status_code in (200, 201):
             return json.dumps({"status": "success", "order_id": response.json().get("id")})
-        
+
         return json.dumps({"status": "rejected", "error": response.text})
-    except Exception as e:
-        return json.dumps({"status": "critical_failure", "error": str(e)})
+    except Exception as exc:
+        return json.dumps({"status": "critical_failure", "error": str(exc)})
 
 if __name__ == "__main__":
     mcp.run()

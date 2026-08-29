@@ -191,18 +191,16 @@ if __name__ == '__main__':
         payload = build_mleg_payload(legs, contracts=verdict.contracts,
                                      limit_price=net_limit_price(legs))
         
-        # Inject the mathematical rationale for the LLM to audit
-        OptionsExecutionAgent().submit_mleg_payload(
-            payload, 
-            rationale=strategy.get('rationale', 'Approved by Risk Gates')
+        # The LLM audits and releases the order through the MCP dispatch tool.
+        # submit_mleg_payload raises unless the broker accepted it, so a
+        # rejection can no longer be logged as a completed cycle.
+        result = OptionsExecutionAgent().submit_mleg_payload(
+            payload,
+            rationale=strategy.get('rationale', 'Approved by risk gates'),
         )
+        logger.info(f"ORDER ACCEPTED by broker | id={result.get('order_id')}")
 
         logger.info("=== CYCLE COMPLETE ===")
-
-    except Exception:
-        # Log the full traceback and exit non-zero so CI reports the failure.
-        logger.exception("Critical pipeline failure")
-        sys.exit(1)
 
     except Exception:
         # Log the full traceback and exit non-zero so CI reports the failure.
