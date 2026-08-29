@@ -2,32 +2,33 @@ import os
 import sys
 import json
 import logging
+import requests
 from datetime import datetime
 from mcp.server.mcpserver import MCPServer
 
-# Secuestro de Logs: Silenciamos cualquier salida a consola (STDIO) para no corromper el protocolo MCP
+# Log hijacking: Silence console output to prevent MCP protocol corruption
 logging.basicConfig(level=logging.WARNING, filename='mcp_silent.log', filemode='w')
 
 from data_ingestion.alpaca_ingestor import UnderlyingIngestor, OptionsContractResolver
 from quant_core.garch_engine import GarchVolatilityEngine
 from quant_core.exit_engine import PortfolioRiskManager
 
-# Inicialización del Servidor MCP (Estándar v2.x)
+# Initialize standard v2.x MCP Server
 mcp = MCPServer("AlphaOptionsAgent")
 
 @mcp.tool()
 def get_portfolio_state() -> str:
-    """Obtiene el estado actual del portafolio en Alpaca, filtrando opciones de SPY vivas."""
+    """Fetches the current portfolio state from Alpaca, filtering live SPY options."""
     try:
         resolver = OptionsContractResolver(underlying_ticker='SPY')
-        posiciones = resolver.trading_client.get_all_positions()
-        patas_activas = [p for p in posiciones if p.symbol.startswith('SPY') and len(p.symbol) > 5]
+        positions = resolver.trading_client.get_all_positions()
+        active_legs = [p for p in positions if p.symbol.startswith('SPY') and len(p.symbol) > 5]
         
-        if not patas_activas:
+        if not active_legs:
             return json.dumps({"status": "clean", "positions": []})
             
         data = []
-        for p in patas_activas:
+        for p in active_legs:
             data.append({
                 "symbol": p.symbol,
                 "qty": float(p.qty),
@@ -40,37 +41,37 @@ def get_portfolio_state() -> str:
 
 @mcp.tool()
 def evaluate_gamma_risk() -> str:
-    """Evalúa las condiciones estructurales de salida (Stop Loss, Take Profit, Riesgo Gamma DTE <= 5)."""
+    """Evaluates structural exit conditions (Stop Loss, Take Profit, Gamma Risk DTE <= 5)."""
     try:
         resolver = OptionsContractResolver(underlying_ticker='SPY')
-        posiciones = resolver.trading_client.get_all_positions()
-        patas_activas = [p for p in posiciones if p.symbol.startswith('SPY') and len(p.symbol) > 5]
+        positions = resolver.trading_client.get_all_positions()
+        active_legs = [p for p in positions if p.symbol.startswith('SPY') and len(p.symbol) > 5]
         
-        if not patas_activas:
-            return "Portafolio limpio. No hay riesgo Gamma estructural presente."
+        if not active_legs:
+            return "Clean portfolio. No structural Gamma risk present."
             
-        manager = PortfolioRiskManager(patas_activas)
-        debe_liquidar, razon = manager.evaluate_exit_conditions()
+        manager = PortfolioRiskManager(active_legs)
+        must_liquidate, reason = manager.evaluate_exit_conditions()
         
         return json.dumps({
-            "liquidation_required": debe_liquidar,
-            "reason": razon
+            "liquidation_required": must_liquidate,
+            "reason": reason
         })
     except Exception as e:
-        return f"Error en la evaluación de riesgo: {str(e)}"
+        return f"Risk evaluation error: {str(e)}"
 
 @mcp.tool()
 def get_volatility_regime() -> str:
-    """Ejecuta el motor estocástico GARCH(1,1) para SPY y devuelve el VaR(99%) dinámico."""
+    """Runs the GARCH(1,1) stochastic engine for SPY and returns dynamic VaR(99%)."""
     try:
-        hoy_str = datetime.now().strftime('%Y-%m-%d')
-        ingestor = UnderlyingIngestor(ticker='SPY', start_date='2016-01-01', end_date=hoy_str)
-        retornos = ingestor.process_memory_data()
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        ingestor = UnderlyingIngestor(ticker='SPY', start_date='2016-01-01', end_date=today_str)
+        log_returns = ingestor.process_memory_data()
         spot = ingestor.get_latest_price()
         
-        motor = GarchVolatilityEngine(retornos)
-        df_res, params, modelo = motor.fit_model()
-        var, vol = motor.calculate_tail_risk(modelo)
+        engine = GarchVolatilityEngine(log_returns)
+        df_res, params, model = engine.fit_model()
+        var, vol = engine.calculate_tail_risk(model)
         
         regime = "high_volatility" if var < -0.035 else "volatility_compression"
         
@@ -81,7 +82,31 @@ def get_volatility_regime() -> str:
             "regime": regime
         })
     except Exception as e:
-        return f"Error crítico en GARCH engine: {str(e)}"
+        return f"Critical GARCH engine error: {str(e)}"
+
+@mcp.tool()
+def dispatch_mleg_order(payload_json: str) -> str:
+    """
+    Receives a stringified JSON MLEG payload and dispatches it to Alpaca.
+    This tool isolates the execution layer behind the MCP protocol.
+    """
+    try:
+        payload = json.loads(payload_json)
+        headers = {
+            "APCA-API-KEY-ID": os.getenv("ALPACA_API_KEY"),
+            "APCA-API-SECRET-KEY": os.getenv("ALPACA_API_SECRET") or os.getenv("ALPACA_SECRET_KEY"),
+            "Content-Type": "application/json"
+        }
+        url = "https://paper-api.alpaca.markets/v2/orders"
+        
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        if response.status_code in (200, 201):
+            return json.dumps({"status": "success", "order_id": response.json().get("id")})
+        
+        return json.dumps({"status": "rejected", "error": response.text})
+    except Exception as e:
+        return json.dumps({"status": "critical_failure", "error": str(e)})
 
 if __name__ == "__main__":
     mcp.run()

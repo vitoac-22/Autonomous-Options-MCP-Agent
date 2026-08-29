@@ -190,9 +190,19 @@ if __name__ == '__main__':
         # 9. A valid multi-leg order, priced from real quotes.
         payload = build_mleg_payload(legs, contracts=verdict.contracts,
                                      limit_price=net_limit_price(legs))
-        OptionsExecutionAgent().submit_mleg_payload(payload)
+        
+        # Inject the mathematical rationale for the LLM to audit
+        OptionsExecutionAgent().submit_mleg_payload(
+            payload, 
+            rationale=strategy.get('rationale', 'Approved by Risk Gates')
+        )
 
         logger.info("=== CYCLE COMPLETE ===")
+
+    except Exception:
+        # Log the full traceback and exit non-zero so CI reports the failure.
+        logger.exception("Critical pipeline failure")
+        sys.exit(1)
 
     except Exception:
         # Log the full traceback and exit non-zero so CI reports the failure.
