@@ -1,5 +1,6 @@
 import sys
 import logging
+from datetime import datetime
 from data_ingestion.alpaca_ingestor import UnderlyingIngestor, OptionsContractResolver
 from quant_core.garch_engine import GarchVolatilityEngine
 from quant_core.options_pricer import OptionsStrategySelector
@@ -43,7 +44,8 @@ if __name__ == '__main__':
         logger.info("Portafolio limpio. Autorizando despliegue de capital.")
         
         # 1. Ingestión del Subyacente
-        ingestor = UnderlyingIngestor(ticker='SPY', start_date='2016-01-01', end_date='2026-08-28')
+        hoy_str = datetime.now().strftime('%Y-%m-%d')
+        ingestor = UnderlyingIngestor(ticker='SPY', start_date='2016-01-01', end_date=hoy_str)
         retornos_log = ingestor.process_memory_data()
         precio_actual_spy = ingestor.get_latest_price()
         
@@ -103,5 +105,9 @@ if __name__ == '__main__':
         
         logger.info("=== CICLO DIARIO COMPLETADO CON ÉXITO ===")
 
-    except Exception as e:
-        logger.error(f"Fallo crítico en el pipeline institucional: {str(e)}")
+    except Exception:
+        # Log the full traceback and exit non-zero so CI reports the failure.
+        # Previously this swallowed every error and exited 0, which made GitHub
+        # Actions show a green check on runs where no order was ever placed.
+        logger.exception("Fallo crítico en el pipeline institucional")
+        sys.exit(1)

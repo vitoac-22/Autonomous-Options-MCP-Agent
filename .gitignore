@@ -1,5 +1,8 @@
 .env
 venv/
+.venv/
 __pycache__/
 .DS_Store
-.github
+
+# Runtime artifacts — generated on each run, never committed
+*.log
