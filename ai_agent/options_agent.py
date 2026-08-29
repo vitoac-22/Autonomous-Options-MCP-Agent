@@ -1,76 +1,77 @@
 import os
-import json
 import logging
+import requests
 from dotenv import load_dotenv
-from openai import OpenAI
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
 
 load_dotenv()
 
 class OptionsExecutionAgent:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        featherless_key = os.getenv('FEATHERLESS_API_KEY')
-        api_key = os.getenv('ALPACA_API_KEY')
-        api_secret = os.getenv('ALPACA_SECRET_KEY') or os.getenv('ALPACA_API_SECRET')
+        self.api_key = os.getenv('ALPACA_API_KEY')
+        self.api_secret = os.getenv('ALPACA_SECRET_KEY') or os.getenv('ALPACA_API_SECRET')
+        self.base_url = "https://paper-api.alpaca.markets/v2"
         
-        if not featherless_key:
-            raise ValueError("Missing FEATHERLESS_API_KEY credential in .env.")
-        if not api_key or not api_secret:
-            raise ValueError("Missing Alpaca credentials in environment.")
-            
-        self.llm_client = OpenAI(
-            base_url="https://api.featherless.ai/v1",
-            api_key=featherless_key
-        )
-        self.model_id = "Qwen/Qwen2.5-7B-Instruct"
-        self.trading_client = TradingClient(api_key, api_secret, paper=True)
+        if not self.api_key or not self.api_secret:
+            raise ValueError("Faltan credenciales maestras de Alpaca en el entorno.")
 
-    def reason_target_structure(self, strategy_payload):
-        messages = [
-            {"role": "system", "content": "You are an Institutional Options Execution Agent. Parse the strategy payload and return ONLY a JSON object with a key 'orders' containing a list of dictionaries with 'symbol', 'qty' (integer), and 'side' (buy/sell)."},
-            {"role": "user", "content": f"Strategy Payload: {strategy_payload}"}
-        ]
-        
-        self.logger.info(f"Structured inference via Featherless AI ({self.model_id})...")
-        response = self.llm_client.chat.completions.create(
-            model=self.model_id,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.0
-        )
-        return json.loads(response.choices[0].message.content)
+        self.headers = {
+            "APCA-API-KEY-ID": self.api_key,
+            "APCA-API-SECRET-KEY": self.api_secret,
+            "Content-Type": "application/json"
+        }
 
     def execute_atomic_transaction(self, strategy_payload):
-        """ACID: The entire options block executes via native SDK, or rolls back completely."""
-        instructions = self.reason_target_structure(strategy_payload)
-        orders = instructions.get("orders", [])
-        
-        if not orders:
-            self.logger.info("No operations required by the model.")
+        legs = strategy_payload.get("legs", [])
+        if not legs:
+            self.logger.info("Sin patas estructurales para operar. Abortando.")
             return
 
-        executed_order_ids = []
-        try:
-            for order in orders:
-                side_enum = OrderSide.BUY if order['side'].lower() == 'buy' else OrderSide.SELL
-                req = MarketOrderRequest(
-                    symbol=order['symbol'],
-                    qty=int(order['qty']),
-                    side=side_enum,
-                    time_in_force=TimeInForce.DAY
-                )
-                submitted_order = self.trading_client.submit_order(req)
-                executed_order_ids.append(submitted_order.id)
-                self.logger.info(f"SUCCESS (SDK): {order['side'].upper()} order submitted for {order['symbol']}, Qty: {order['qty']}")
+        base_qty = min(leg.get('qty', 1) for leg in legs)
+        mleg_legs = []
+        for leg in legs:
+            mleg_legs.append({
+                "symbol": leg['symbol'],
+                "ratio_qty": int(leg['qty'] / base_qty),
+                "side": leg['side'].lower()
+            })
+
+        payload = {
+            "order_class": "mleg",
+            "type": "market",
+            "time_in_force": "day",
+            "legs": mleg_legs
+        }
+
+        self.logger.info("Despachando bloque atómico MLEG directamente al motor del bróker...")
+        response = requests.post(f"{self.base_url}/orders", json=payload, headers=self.headers)
+
+        if response.status_code in [200, 201]:
+            order_id = response.json().get('id')
+            self.logger.info(f"=== ÉXITO ESTRUCTURAL === Orden MLEG aceptada. ID: {order_id}")
+        else:
+            error_msg = response.text
+            self.logger.error(f"RECHAZO DE BRÓKER (Rollback automático garantizado): {error_msg}")
+            raise RuntimeError(f"Alpaca rechazó la estructura MLEG: {error_msg}")
+
+    def liquidate_portfolio(self, positions):
+        """
+        Fuerza bruta racional: Cierra todas las posiciones en SPY a mercado 
+        para anular el riesgo de inmediato.
+        """
+        self.logger.info("Iniciando protocolo de liquidación de posiciones...")
+        spy_options = [p for p in positions if p.symbol.startswith('SPY') and len(p.symbol) > 5]
         
-        except Exception as e:
-            self.logger.error(f"ATOMICITY FAILURE. Initiating Rollback. Error: {str(e).strip()}")
-            for order_id in executed_order_ids:
-                try:
-                    self.trading_client.cancel_order_by_id(order_id)
-                except Exception as cancel_err:
-                    self.logger.error(f"Failed to cancel order {order_id}: {cancel_err}")
-            raise RuntimeError("Transactional block aborted to prevent asymmetric directional exposure.")
+        for p in spy_options:
+            symbol = p.symbol
+            try:
+                self.logger.info(f"Enviando orden de liquidación para: {symbol}")
+                response = requests.delete(f"{self.base_url}/positions/{symbol}", headers=self.headers)
+                if response.status_code in [200, 201]:
+                    self.logger.info(f"Liquidación ejecutada: {symbol}")
+                else:
+                    self.logger.error(f"Fallo al liquidar {symbol}. Bróker: {response.text}")
+            except Exception as e:
+                self.logger.error(f"Error de red al liquidar {symbol}: {str(e)}")
+        
+        self.logger.info("=== PORTAFOLIO NEUTRALIZADO ===")

@@ -2,7 +2,8 @@ name: Institutional Options Alpha Agent EOD
 
 on:
   schedule:
-    - cron: '30 19 * * 1-5'
+    # 19:45 UTC equivale a 15:45 EDT (15 minutos antes del cierre de NY)
+    - cron: '45 19 * * 1-5'
   workflow_dispatch: 
 
 jobs:

@@ -8,7 +8,6 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
-from alpaca.trading.enums import ContractType
 
 load_dotenv()
 
@@ -60,32 +59,24 @@ class OptionsContractResolver(AlpacaCredentials):
         exclude_symbols = exclude_symbols or set()
         hoy = datetime.now().date()
         
-        # Exigir vencimiento mínimo de 3 días para evitar bloqueos por expiración inminente
+        # 1. Precisión Cuantitativa: Acotar la superficie de volatilidad en la petición REST
         min_exp = hoy + timedelta(days=3)
-        contract_type_enum = ContractType.PUT if option_type.lower() == 'put' else ContractType.CALL
+        target_char = 'P' if option_type.lower() == 'put' else 'C'
         
-        # Petición optimizada directamente al servidor de Alpaca
+        # Ventana de liquidez ampliada a +/- $15 para capturar las alas del Iron Condor
         req = GetOptionContractsRequest(
             underlying_symbols=[self.underlying_ticker],
             status="active",
-            type=contract_type_enum,
-            expiration_date_gte=min_exp.strftime('%Y-%m-%d')
+            expiration_date_gte=min_exp.strftime('%Y-%m-%d'),
+            strike_price_gte=str(round(float(target_strike) - 15.0, 2)),
+            strike_price_lte=str(round(float(target_strike) + 15.0, 2))
         )
+        
         res = self.trading_client.get_option_contracts(req)
         contracts = res.option_contracts
-        
-        # Respaldo de emergencia si el servidor no retorna contratos con el filtro estricto de fecha
-        if not contracts:
-            req_fallback = GetOptionContractsRequest(
-                underlying_symbols=[self.underlying_ticker],
-                status="active",
-                type=contract_type_enum
-            )
-            res_fallback = self.trading_client.get_option_contracts(req_fallback)
-            contracts = res_fallback.option_contracts
             
         if not contracts:
-            raise RuntimeError(f"BLOQUEO DE BRÓKER: Cero contratos {option_type.upper()} disponibles para {self.underlying_ticker}.")
+            raise RuntimeError(f"Fallo de liquidez en el servidor: Cero contratos devueltos cerca del strike {target_strike} para {self.underlying_ticker}.")
             
         contratos_validos = []
         for c in contracts:
@@ -93,45 +84,50 @@ class OptionsContractResolver(AlpacaCredentials):
             if symbol in exclude_symbols:
                 continue
                 
-            # Extracción del Strike
+            # 2. Filtrado determinista de Tipo (Call vs Put) a nivel de cadena OCC
+            if target_char not in symbol:
+                continue
+                
+            # 3. Extracción robusta de variables
             strike = getattr(c, 'strike_price', None)
             if strike is not None:
                 try:
                     strike = float(strike)
                 except:
                     strike = None
-            
             if strike is None and len(symbol) >= 8:
                 try:
                     strike = float(symbol[-8:]) / 1000.0
                 except:
                     continue
-            
             if strike is None:
                 continue
                 
-            # Cálculo de DTE
             exp_raw = getattr(c, 'expiration_date', None)
-            dte = 30
-            if exp_raw:
-                try:
-                    exp_date = exp_raw if isinstance(exp_raw, date) else datetime.strptime(str(exp_raw)[:10], '%Y-%m-%d').date()
-                    dte = (exp_date - hoy).days
-                except:
-                    pass
+            if not exp_raw:
+                continue
+                
+            try:
+                exp_date = exp_raw if isinstance(exp_raw, date) else datetime.strptime(str(exp_raw)[:10], '%Y-%m-%d').date()
+                dte = (exp_date - hoy).days
+            except:
+                continue
+
+            if dte < 3:
+                continue
 
             contratos_validos.append({
                 'symbol': symbol,
                 'strike': strike,
-                'dte': abs(dte)
+                'dte': dte
             })
                 
         if not contratos_validos:
-            raise RuntimeError(f"Fallo de asignación: Imposible mapear contratos {option_type.upper()} limpios de colisión.")
+            raise RuntimeError(f"Fallo de asignación tras el filtrado estricto para {option_type.upper()} a ${target_strike}.")
             
         df = pd.DataFrame(contratos_validos)
         
-        # Snapping institucional: Priorizar la menor distancia al strike teórico calculado por GARCH
+        # 4. Snapping Institucional: Minimizar deslizamiento buscando el strike exacto
         df['distancia'] = abs(df['strike'] - target_strike)
         df = df.sort_values(['distancia', 'dte'])
         
