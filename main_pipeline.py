@@ -40,6 +40,7 @@ from quant_core.risk_gates import (
     TradeProposal, Position, AccountSnapshot, GateConfig, evaluate,
 )
 from quant_core.decision_journal import journal_entry, append_entry, DEFAULT_JOURNAL
+from quant_core.liquidation_outcome import assess_liquidation
 from ai_agent.options_agent import OptionsExecutionAgent
 from ai_agent.mleg_payload import build_mleg_payload, net_limit_price
 
@@ -83,8 +84,23 @@ if __name__ == '__main__':
             logger.warning(f"Existing exposure: {len(live_legs)} live legs.")
             should_exit, reason = PortfolioRiskManager(live_legs).evaluate_exit_conditions()
             logger.info(f"Exit engine: {reason}")
+
             if should_exit:
-                OptionsExecutionAgent().liquidate_portfolio(live_legs)
+                failures = OptionsExecutionAgent().liquidate_portfolio(live_legs)
+                # liquidate_portfolio reports what it could not close, and that
+                # return value used to be discarded — a failed emergency exit
+                # logged CYCLE COMPLETE and exited 0, so CI went green while the
+                # account stayed exposed.
+                is_open, _, _ = market_state(resolver.trading_client)
+                outcome = assess_liquidation(failures, market_open=is_open)
+                if outcome.ok:
+                    logger.info(outcome.reason)
+                elif outcome.exit_code:
+                    logger.error(outcome.reason)
+                    sys.exit(outcome.exit_code)
+                else:
+                    logger.warning(outcome.reason)
+
             logger.info("=== MONITORING CYCLE COMPLETE ===")
             sys.exit(0)
 
