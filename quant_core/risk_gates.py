@@ -95,8 +95,8 @@ class AccountSnapshot:
 
 @dataclass(frozen=True)
 class GateConfig:
-    core_fraction: float = 0.60
-    convex_fraction: float = 0.40
+    core_fraction: float = 0.85      # see config.StrategyConfig for the rationale
+    convex_fraction: float = 0.15
     max_concentration: float = 0.25      # per underlying, of equity
     max_spread_pct: float = 0.10         # (ask-bid)/mid on any leg
     min_open_interest: int = 500
