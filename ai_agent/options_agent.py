@@ -31,6 +31,7 @@ prompt merely asked it not to. An approval hash now travels with the order and
 the MCP tool refuses anything that does not match.
 """
 import os
+import sys
 import json
 import asyncio
 import logging
@@ -92,8 +93,15 @@ class OptionsExecutionAgent:
 
         self.logger.info(f"Starting MCP server and LLM audit ({self.model_id})...")
 
+        # sys.executable, not "python3". A bare "python3" resolves through PATH
+        # to whatever interpreter happens to be first — on a machine with a
+        # virtualenv that is the *system* Python, which has none of this
+        # project's dependencies, so the server subprocess dies on `import mcp`
+        # and the client sees only "Connection closed". Spawning the same
+        # interpreter that is running the agent is correct in a venv, in CI and
+        # in a container alike.
         server_params = StdioServerParameters(
-            command="python3", args=["mcp_server.py"], env=os.environ.copy(),
+            command=sys.executable, args=["mcp_server.py"], env=os.environ.copy(),
         )
 
         # stdio_client is an async CONTEXT MANAGER, not an async generator.

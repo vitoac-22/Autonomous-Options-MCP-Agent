@@ -26,6 +26,7 @@ The mock below is a REAL @asynccontextmanager. The existing suite passes an
 confirms defect 1 instead of catching it.
 """
 import json
+import os
 import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import patch, MagicMock
@@ -131,6 +132,11 @@ class TestAgentConstruction(unittest.TestCase):
     @patch.dict("os.environ", {"ALPACA_API_KEY": "k", "ALPACA_API_SECRET": "s"}, clear=True)
     def test_dispatch_still_requires_the_llm_key(self):
         from ai_agent.options_agent import OptionsExecutionAgent
+        # clear=True is not sufficient on its own: options_agent calls
+        # load_dotenv() at import, which repopulates os.environ from .env inside
+        # the patched context. Remove the key explicitly so this asserts the
+        # code path rather than the developer's local .env.
+        os.environ.pop("FEATHERLESS_API_KEY", None)
         agent = OptionsExecutionAgent()
         with self.assertRaises(ValueError):
             agent._llm_client()
@@ -255,3 +261,28 @@ class TestMCPToolEnforcement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestMCPServerSpawn(unittest.TestCase):
+    """The MCP server must run under the interpreter running the agent.
+
+    `command="python3"` resolves through PATH. Inside a virtualenv that finds
+    the system Python, which lacks this project's dependencies, so the server
+    dies on `import mcp` and the client reports only "Connection closed".
+    """
+
+    def test_spawns_the_current_interpreter_not_a_path_lookup(self):
+        import sys as _sys
+        import inspect
+        from ai_agent import options_agent
+        src = inspect.getsource(options_agent._evaluate_and_dispatch) \
+            if hasattr(options_agent, "_evaluate_and_dispatch") \
+            else inspect.getsource(options_agent.OptionsExecutionAgent._evaluate_and_dispatch)
+        self.assertIn("command=sys.executable", src)
+        self.assertNotIn('command="python3"', src)
+
+    def test_the_interpreter_can_import_the_server_dependencies(self):
+        """Guards the real failure: the spawned interpreter lacking mcp."""
+        import importlib
+        for mod in ("mcp", "alpaca", "requests"):
+            self.assertIsNotNone(importlib.import_module(mod))
