@@ -120,9 +120,12 @@ if __name__ == '__main__':
                          target_strike=float(leg['target_strike']))
                  for leg in strategy['legs']]
 
+        final_expiry = (datetime.strptime(cfg.final_expiry, "%Y-%m-%d").date()
+                        if cfg.final_expiry else None)
         expiry, contracts = ChainResolver(cfg.underlying).resolve_structure(
             specs, today=today, target_dte=cfg.target_dte,
             min_dte=cfg.min_dte, max_dte=cfg.max_dte,
+            not_after=final_expiry,
         )
         logger.info(f"Expiry {expiry} | " +
                     " ".join(f"{c.kind[0].upper()}{c.strike:g}" for c in contracts))

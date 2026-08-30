@@ -51,6 +51,13 @@ class StrategyConfig:
     # balance, not the current session's opening equity.
     contest_start_equity: float = 100_000.0
 
+    # Hard ceiling on expiry. Total account equity is photographed at the close
+    # of Thursday 3 Sep, and option exercises/assignments for that date are
+    # reflected in it. A position expiring after the snapshot is only marked to
+    # market, so a premium-selling structure would capture partial time decay
+    # instead of the whole credit. Empty string disables the ceiling.
+    final_expiry: str = "2026-09-03"
+
     def __post_init__(self):
         if self.min_dte > self.max_dte:
             raise ValueError(f"min_dte {self.min_dte} exceeds max_dte {self.max_dte}")
@@ -73,4 +80,5 @@ class StrategyConfig:
             core_fraction=_env_float("CORE_FRACTION", cls.core_fraction),
             convex_fraction=_env_float("CONVEX_FRACTION", cls.convex_fraction),
             contest_start_equity=_env_float("CONTEST_START_EQUITY", cls.contest_start_equity),
+            final_expiry=os.environ.get("FINAL_EXPIRY", cls.final_expiry),
         )
