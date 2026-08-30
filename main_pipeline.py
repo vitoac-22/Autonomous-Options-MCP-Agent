@@ -29,7 +29,9 @@ import pytz
 from config import StrategyConfig
 from data_ingestion.alpaca_ingestor import UnderlyingIngestor, OptionsContractResolver
 from data_ingestion.chain_resolver import ChainResolver, LegSpec
-from data_ingestion.options_market_data import OptionsMarketData
+from data_ingestion.options_market_data import (
+    OptionsMarketData, build_legs_via_mcp,
+)
 from quant_core.garch_engine import GarchVolatilityEngine
 from quant_core.options_pricer import OptionsStrategySelector
 from quant_core.strike_mapper import VolatilityCartographer
@@ -131,8 +133,18 @@ if __name__ == '__main__':
                     " ".join(f"{c.kind[0].upper()}{c.strike:g}" for c in contracts))
 
         # 6. Real Greeks, quotes and liquidity — no proxies.
-        legs = OptionsMarketData().build_legs(
-            [(c.symbol, spec.side, 1) for c, spec in zip(contracts, specs)])
+        #
+        # Read through Alpaca's OWN MCP server. Their server reads, ours
+        # dispatches, which makes the "MCP or CLI" requirement unambiguous. The
+        # SDK stays as a fallback so a transient uvx or subprocess failure
+        # degrades rather than killing the cycle.
+        leg_specs = [(c.symbol, spec.side, 1) for c, spec in zip(contracts, specs)]
+        try:
+            legs = build_legs_via_mcp(leg_specs)
+            logger.info("Greeks sourced via Alpaca's MCP server")
+        except Exception as exc:
+            logger.warning(f"Alpaca MCP read failed ({exc}); falling back to the SDK")
+            legs = OptionsMarketData().build_legs(leg_specs)
         logger.info("Deltas " + " ".join(f"{leg.delta:+.3f}" for leg in legs) +
                     " | mids " + " ".join(f"{leg.mid:.2f}" for leg in legs))
 
