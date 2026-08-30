@@ -21,10 +21,19 @@ jobs:
         with:
           python-version: '3.12'
 
+      # uvx runs Alpaca's official MCP server in its own isolated environment.
+      # It has to stay isolated: alpaca-mcp-server needs mcp 1.29.x while our
+      # own server needs mcp 2.1.1, and installing them together breaks one.
+      - name: Install uv (for uvx)
+        uses: astral-sh/setup-uv@v5
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Warm the Alpaca MCP server cache
+        run: uvx --from alpaca-mcp-server python -c "print('alpaca-mcp-server ready')" || true
 
       - name: Execute Autonomous Trading Pipeline
         env:

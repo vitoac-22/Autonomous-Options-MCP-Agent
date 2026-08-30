@@ -165,3 +165,27 @@ class TestJournalIO(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSleeveSizing(unittest.TestCase):
+    """The convex sleeve buys volatility: it pays daily decay and only profits
+    on a real move before expiry. This week the position must expire 3 Sep while
+    the jobs report lands 4 Sep, so it would be dead before the likeliest
+    trigger."""
+
+    def test_core_dominates_the_allocation(self):
+        cfg = StrategyConfig()
+        self.assertGreater(cfg.core_fraction, cfg.convex_fraction)
+
+    def test_convex_is_a_minority_but_not_zero(self):
+        """Keep real convexity, just don't fund it heavily."""
+        cfg = StrategyConfig()
+        self.assertGreater(cfg.convex_fraction, 0.0)
+        self.assertLessEqual(cfg.convex_fraction, 0.25)
+
+    def test_config_and_gate_defaults_agree(self):
+        """Two sources of truth drift silently; this catches it."""
+        from quant_core.risk_gates import GateConfig
+        cfg, gates = StrategyConfig(), GateConfig()
+        self.assertAlmostEqual(cfg.core_fraction, gates.core_fraction)
+        self.assertAlmostEqual(cfg.convex_fraction, gates.convex_fraction)

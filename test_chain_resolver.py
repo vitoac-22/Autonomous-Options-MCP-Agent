@@ -224,3 +224,32 @@ class TestPagination(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestScoringWindowCeiling(unittest.TestCase):
+    """Total equity is photographed at the close of Thu 3 Sep. A position
+    expiring after that is only marked to market, so a premium-selling
+    structure captures partial decay instead of the whole credit."""
+
+    def test_expiry_after_the_ceiling_is_excluded(self):
+        expiries = [date(2026, 9, 3), date(2026, 9, 8)]
+        got = select_expiry(chain(expiries), today=date(2026, 8, 31), target_dte=7,
+                            min_dte=1, max_dte=10, not_after=date(2026, 9, 3))
+        self.assertEqual(got, date(2026, 9, 3))
+
+    def test_without_the_ceiling_the_later_expiry_would_win(self):
+        expiries = [date(2026, 9, 3), date(2026, 9, 8)]
+        got = select_expiry(chain(expiries), today=date(2026, 8, 31), target_dte=7,
+                            min_dte=1, max_dte=10)
+        self.assertEqual(got, date(2026, 9, 8))   # 8 Sep is closer to 7 DTE
+
+    def test_no_expiry_inside_the_ceiling_raises(self):
+        with self.assertRaises(NoExpiryInWindow):
+            select_expiry(chain([date(2026, 9, 8)]), today=date(2026, 8, 31),
+                          target_dte=7, min_dte=1, max_dte=10,
+                          not_after=date(2026, 9, 3))
+
+    def test_ceiling_of_none_disables_the_restriction(self):
+        got = select_expiry(chain([date(2026, 9, 8)]), today=date(2026, 8, 31),
+                            target_dte=7, min_dte=1, max_dte=10, not_after=None)
+        self.assertEqual(got, date(2026, 9, 8))

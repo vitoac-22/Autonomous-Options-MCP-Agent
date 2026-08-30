@@ -8,6 +8,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOptionContractsRequest
+from data_ingestion.market_data_window import safe_end_timestamp
 
 load_dotenv()
 
@@ -19,11 +20,15 @@ class AlpacaCredentials:
             raise ValueError("Credenciales maestras faltantes en .env")
 
 class UnderlyingIngestor(AlpacaCredentials):
-    def __init__(self, ticker: str, start_date: str, end_date: str):
+    def __init__(self, ticker: str, start_date: str, end_date=None):
         super().__init__()
         self.ticker = ticker
         self.start_date = start_date
-        self.end_date = end_date
+        # Alpaca's free plan refuses bars inside the last 15 minutes
+        # ("subscription does not permit querying recent SIP data"), so the
+        # window always stops short of now regardless of what the caller asks
+        # for. Passing today's date failed outright during market hours.
+        self.end_date = safe_end_timestamp()
         self.client = StockHistoricalDataClient(self.api_key, self.api_secret)
 
     def process_memory_data(self) -> pd.DataFrame:

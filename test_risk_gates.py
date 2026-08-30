@@ -244,14 +244,19 @@ class TestSleeveBudget(unittest.TestCase):
         self.assertAlmostEqual(cfg.core_fraction + cfg.convex_fraction, 1.0, places=6)
 
     def test_sleeve_budget_exhausted_vetoes(self):
-        full = (Position(underlying="QQQ", risk=59_000.0, sleeve="core"),
-                Position(underlying="IWM", risk=1_500.0, sleeve="core"))
+        # Derived from the configured fraction rather than hardcoded, so the
+        # test keeps testing the gate when the sleeve split is retuned.
+        budget = 100_000.0 * GateConfig().core_fraction
+        full = (Position(underlying="QQQ", risk=budget * 0.9, sleeve="core"),
+                Position(underlying="IWM", risk=budget * 0.2, sleeve="core"))
         v = evaluate(proposal(sleeve="core"), snapshot(positions=full))
         self.assertFalse(v.approved)
         self.assertIn(VetoReason.SLEEVE_BUDGET_EXHAUSTED, v.reasons)
 
     def test_convex_budget_is_independent_of_core(self):
-        core_full = (Position(underlying="QQQ", risk=59_500.0, sleeve="core"),)
+        core_full = (Position(underlying="QQQ",
+                              risk=100_000.0 * GateConfig().core_fraction,
+                              sleeve="core"),)
         v = evaluate(proposal(sleeve="convex"), snapshot(positions=core_full))
         self.assertNotIn(VetoReason.SLEEVE_BUDGET_EXHAUSTED, v.reasons)
 

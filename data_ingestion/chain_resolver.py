@@ -61,7 +61,8 @@ def select_expiry(contracts: Iterable[Contract],
                   today: date,
                   target_dte: int,
                   min_dte: int,
-                  max_dte: int) -> date:
+                  max_dte: int,
+                  not_after: Optional[date] = None) -> date:
     """Pick one expiration for the whole structure.
 
     Chooses the expiry closest to `target_dte` among those inside the band that
@@ -76,6 +77,7 @@ def select_expiry(contracts: Iterable[Contract],
         expiry for expiry, kinds in by_expiry.items()
         if min_dte <= (expiry - today).days <= max_dte
         and {"call", "put"} <= kinds
+        and (not_after is None or expiry <= not_after)
     ]
     if not eligible:
         raise NoExpiryInWindow(
@@ -220,7 +222,8 @@ class ChainResolver:
 
     def resolve_structure(self, legs: Sequence[LegSpec], today: date,
                           target_dte: int, min_dte: int, max_dte: int,
-                          strike_pad: float = 20.0) -> tuple[date, list[Contract]]:
+                          strike_pad: float = 20.0,
+                          not_after: Optional[date] = None) -> tuple[date, list[Contract]]:
         """Choose one expiry, then map every leg inside it."""
         strikes = [leg.target_strike for leg in legs]
         chain = self.fetch_chain(
@@ -228,5 +231,5 @@ class ChainResolver:
             strike_low=min(strikes) - strike_pad,
             strike_high=max(strikes) + strike_pad,
         )
-        expiry = select_expiry(chain, today, target_dte, min_dte, max_dte)
+        expiry = select_expiry(chain, today, target_dte, min_dte, max_dte, not_after)
         return expiry, map_legs_to_contracts(chain, expiry, legs)

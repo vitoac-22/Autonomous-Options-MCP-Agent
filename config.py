@@ -44,12 +44,29 @@ class StrategyConfig:
     var_threshold: float = -0.035
 
     # Sleeve budgets. Kept in sync with quant_core.risk_gates.GateConfig.
-    core_fraction: float = 0.60
-    convex_fraction: float = 0.40
+    #
+    # Was 60/40. The convex sleeve buys volatility, which pays daily time decay
+    # and only profits on a real move before expiry. Three things argue against
+    # funding it heavily this week: positions must expire by 3 Sep while the
+    # jobs report — the only large catalyst — lands on 4 Sep, so the position is
+    # dead before the likeliest trigger; VIX is ~14 at an IV rank near 10; and
+    # the GARCH fit itself reports persistence 0.997, which is the model saying
+    # calm begets calm. A large long-vol sleeve would be a bet against our own
+    # forecast. 15% keeps genuine convexity without paying rent on a lottery
+    # ticket that expires before the draw.
+    core_fraction: float = 0.85
+    convex_fraction: float = 0.15
 
     # Baseline the drawdown floor measures against — the account's starting
     # balance, not the current session's opening equity.
     contest_start_equity: float = 100_000.0
+
+    # Hard ceiling on expiry. Total account equity is photographed at the close
+    # of Thursday 3 Sep, and option exercises/assignments for that date are
+    # reflected in it. A position expiring after the snapshot is only marked to
+    # market, so a premium-selling structure would capture partial time decay
+    # instead of the whole credit. Empty string disables the ceiling.
+    final_expiry: str = "2026-09-03"
 
     def __post_init__(self):
         if self.min_dte > self.max_dte:
@@ -73,4 +90,5 @@ class StrategyConfig:
             core_fraction=_env_float("CORE_FRACTION", cls.core_fraction),
             convex_fraction=_env_float("CONVEX_FRACTION", cls.convex_fraction),
             contest_start_equity=_env_float("CONTEST_START_EQUITY", cls.contest_start_equity),
+            final_expiry=os.environ.get("FINAL_EXPIRY", cls.final_expiry),
         )

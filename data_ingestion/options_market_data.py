@@ -161,3 +161,39 @@ class OptionsMarketData:
                 raise MissingGreeksError(f"Alpaca returned no snapshot for {symbol}.")
             legs.append(build_leg(symbol, side, snap, ratio))
         return legs
+
+
+def build_legs_via_mcp(specs, client=None) -> list:
+    """Legs built from snapshots read through **Alpaca's own MCP server**.
+
+    Same output as OptionsMarketData.build_legs, sourced through Alpaca's
+    official MCP server rather than the SDK. This is what makes the "MCP or CLI"
+    requirement unambiguous: their server reads the Greeks, ours dispatches the
+    order.
+
+    specs: iterable of (symbol, side, ratio).
+    """
+    from data_ingestion.alpaca_mcp_client import AlpacaMCPClient, parse_snapshots, MCPProtocolError
+
+    specs = list(specs)
+    symbols = [symbol for symbol, _, _ in specs]
+
+    def _fetch(mcp):
+        return parse_snapshots(mcp.call("get_option_snapshot",
+                                        {"symbols": ",".join(symbols)}))
+
+    if client is not None:
+        snapshots = _fetch(client)
+    else:
+        with AlpacaMCPClient() as mcp:
+            snapshots = _fetch(mcp)
+
+    legs = []
+    for symbol, side, ratio in specs:
+        snapshot = snapshots.get(symbol)
+        if snapshot is None:
+            raise MissingGreeksError(
+                f"Alpaca's MCP server returned no snapshot for {symbol}."
+            )
+        legs.append(build_leg(symbol, side, snapshot, ratio))
+    return legs

@@ -5,6 +5,9 @@ import pytz
 import os
 from alpaca.trading.requests import GetPortfolioHistoryRequest
 from data_ingestion.alpaca_ingestor import OptionsContractResolver
+from quant_core.decision_journal import (
+    read_entries, summarise, DEFAULT_JOURNAL,
+)
 
 # Institutional Page Configuration
 st.set_page_config(page_title="AlphaOptions Terminal", layout="wide", initial_sidebar_state="collapsed")
@@ -123,19 +126,76 @@ with col_risk:
             lambda x: 'color: #00E676' if x > 0 else ('color: #FF5252' if x < 0 else ''),
             subset=['Unrealized PnL ($)']
         )
-        st.dataframe(formatted_df, use_container_width=True, hide_index=True)
+        st.dataframe(formatted_df, width='stretch', hide_index=True)
 
 st.markdown("---")
 
-# 3. ACID AUDIT LOGS
-st.header("System Telemetry & ACID Logs")
-st.caption("Real-time viewer of quantitative reasoning and dispatched orders.")
+# 3. DECISION JOURNAL
+#
+# This previously tailed "pipeline.log". That file is written by the GitHub
+# Actions runner, which is destroyed when the job ends, while this dashboard
+# reads its own filesystem — so the panel showed "pending generation" forever in
+# production. The decision journal is committed back by the workflow, so both
+# sides read the same file.
+st.header("Decision Journal")
+st.caption("Every decision the agent made, approved or refused, with its reasoning.")
 
-log_file = "pipeline.log"
-if os.path.exists(log_file):
-    with open(log_file, "r") as f:
-        logs = f.readlines()[-25:]
-        log_text = "".join(logs)
-    st.code(log_text, language="log")
+decisions = read_entries(DEFAULT_JOURNAL)
+
+if not decisions:
+    st.info("No decisions recorded yet. The orchestrator writes one per cycle.")
 else:
-    st.warning(f"Audit file '{log_file}' pending generation. The orchestrator will initialize it on the next cron cycle.")
+    stats = summarise(decisions)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Decisions", stats["total"])
+    c2.metric("Executed", stats["approved"])
+    c3.metric("Refused", stats["vetoed"])
+    c4.metric("Contracts", stats["contracts_traded"])
+
+    if stats["top_veto_reasons"]:
+        st.caption("Why the agent declined to trade")
+        st.dataframe(
+            pd.DataFrame(stats["top_veto_reasons"], columns=["Reason", "Times"]),
+            width='stretch', hide_index=True,
+        )
+
+    st.markdown("---")
+
+    for entry in reversed(decisions[-15:]):
+        stamp = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+        executed = entry.get("approved")
+        badge = "🟢 EXECUTED" if executed else "🔴 REFUSED"
+        headline = (f"{badge} — {stamp} — {entry.get('structure', '?')} "
+                    f"({entry.get('sleeve', '?')} sleeve)")
+
+        with st.expander(headline, expanded=not executed and entry is decisions[-1]):
+            if executed:
+                st.success(f"Executed {entry.get('contracts')} contracts")
+            else:
+                for reason in entry.get("reasons", []):
+                    st.error(f"Gate refused: {reason.replace('_', ' ')}")
+
+            st.caption(f"Model rationale: {entry.get('rationale', '—')}")
+
+            m1, m2, m3 = st.columns(3)
+            net_delta = entry.get("net_delta")
+            max_loss = entry.get("max_loss_per_contract")
+            m1.metric("Net delta", f"{net_delta:+.4f}" if net_delta is not None else "—")
+            m2.metric("Max loss / contract",
+                      f"${max_loss:,.0f}" if max_loss is not None else "—")
+            m3.metric("Equity", f"${entry.get('equity', 0):,.0f}")
+
+            legs = entry.get("legs", [])
+            if legs:
+                st.dataframe(pd.DataFrame([{
+                    "Side": leg.get("side", "").upper(),
+                    "×": leg.get("ratio"),
+                    "Type": leg.get("kind", "").upper(),
+                    "Strike": leg.get("strike"),
+                    "Expiry": leg.get("expiry"),
+                    "Delta": round(leg.get("delta", 0), 4),
+                    "Mid": leg.get("mid"),
+                    "OI": leg.get("open_interest"),
+                    "Contract": leg.get("symbol"),
+                } for leg in legs]), width='stretch', hide_index=True)
