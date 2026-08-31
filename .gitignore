@@ -6,3 +6,5 @@ __pycache__/
 
 # Runtime artifacts — generated on each run, never committed
 *.log
+ops/*.log
+ops/launchd.*
