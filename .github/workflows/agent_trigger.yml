@@ -2,8 +2,24 @@ name: Institutional Options Alpha Agent EOD
 
 on:
   schedule:
-    # 19:45 UTC equivale a 15:45 EDT (15 minutos antes del cierre de NY)
-    - cron: '45 19 * * 1-5'
+    # Three attempts, not one.
+    #
+    # The previous schedule was a single 19:45 UTC (15:45 ET) run, fifteen
+    # minutes before the close. It never fired — not once in the repo's
+    # history, across every weekday the workflow has been on main. GitHub
+    # queues scheduled workflows rather than guaranteeing them: delays of
+    # 10-60 minutes are routine and runs are dropped outright under load, so
+    # fifteen minutes of slack meant the run had to be perfectly punctual to
+    # be worth anything at all.
+    #
+    # These land mid-session with hours of slack, on odd minutes to avoid the
+    # congested top of the hour. Running three times a day does not trade
+    # three times: the pipeline reconciles open positions first and takes the
+    # monitoring path when anything is live, so later runs manage the position
+    # the first one opened rather than opening another.
+    - cron: '7 15 * * 1-5'    # 11:07 ET — mid-morning, tight spreads
+    - cron: '13 17 * * 1-5'   # 13:13 ET — midday backup
+    - cron: '19 19 * * 1-5'   # 15:19 ET — last chance, 41 min before the close
   workflow_dispatch: 
 
 permissions:
