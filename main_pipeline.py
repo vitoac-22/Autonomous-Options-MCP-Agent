@@ -30,7 +30,7 @@ from config import StrategyConfig
 from data_ingestion.alpaca_ingestor import UnderlyingIngestor, OptionsContractResolver
 from data_ingestion.chain_resolver import ChainResolver, LegSpec
 from data_ingestion.options_market_data import (
-    OptionsMarketData, build_legs_via_mcp,
+    OptionsMarketData, build_legs_via_mcp, prefer_chain_liquidity,
 )
 from quant_core.garch_engine import GarchVolatilityEngine
 from quant_core.options_pricer import OptionsStrategySelector
@@ -161,6 +161,10 @@ if __name__ == '__main__':
         except Exception as exc:
             logger.warning(f"Alpaca MCP read failed ({exc}); falling back to the SDK")
             legs = OptionsMarketData().build_legs(leg_specs)
+        # Snapshot sources serve no open interest (the SDK model lacks the
+        # field; the indicative feed zeroes it) — the chain carries the real
+        # number. Zero OI would trip the liquidity gate on missing data.
+        legs = prefer_chain_liquidity(legs, contracts)
         logger.info("Deltas " + " ".join(f"{leg.delta:+.3f}" for leg in legs) +
                     " | mids " + " ".join(f"{leg.mid:.2f}" for leg in legs))
 

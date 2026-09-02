@@ -127,12 +127,30 @@ class TestSpreadAndLiquidity(unittest.TestCase):
         self.assertFalse(v.approved)
         self.assertIn(VetoReason.ILLIQUID, v.reasons)
 
-    def test_zero_volume_vetoes(self):
+    def test_zero_volume_no_longer_vetoes(self):
+        # Volume is absent from every snapshot source on the free tier (the
+        # SDK model has no volume field at all), so a volume threshold voted
+        # on missing data. Liquidity is OI-based now.
         legs = list(iron_condor())
         legs[1] = leg(kind="put", side="sell", strike=95.0, volume=0)
         v = evaluate(proposal(legs=tuple(legs)), snapshot())
+        self.assertNotIn(VetoReason.ILLIQUID, v.reasons)
+
+    def test_nickel_wide_cheap_leg_passes_the_spread_gate(self):
+        # A $0.05-wide market on a $0.04 wing is 125% of mid yet perfectly
+        # tradeable — the absolute floor covers it.
+        legs = list(iron_condor())
+        legs[3] = leg(kind="call", side="buy", strike=108.0, bid=0.02, ask=0.07)
+        v = evaluate(proposal(legs=tuple(legs)), snapshot())
+        self.assertNotIn(VetoReason.WIDE_SPREAD, v.reasons)
+
+    def test_wide_and_expensive_leg_still_vetoes(self):
+        # Beyond the floor, the percentage test applies as before.
+        legs = list(iron_condor())
+        legs[2] = leg(kind="call", side="sell", strike=105.0, bid=0.50, ask=1.50)  # $1.00 wide, 100% of mid
+        v = evaluate(proposal(legs=tuple(legs)), snapshot())
         self.assertFalse(v.approved)
-        self.assertIn(VetoReason.ILLIQUID, v.reasons)
+        self.assertIn(VetoReason.WIDE_SPREAD, v.reasons)
 
     def test_zero_mid_price_is_vetoed_not_divided_by(self):
         legs = list(iron_condor())

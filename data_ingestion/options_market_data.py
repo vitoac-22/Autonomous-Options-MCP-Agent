@@ -116,6 +116,28 @@ def build_leg(symbol: str, side: str, snapshot, ratio: int = 1) -> Leg:
     )
 
 
+def prefer_chain_liquidity(legs, contracts) -> tuple:
+    """Fill zero open-interest from the contract chain.
+
+    alpaca-py's OptionsSnapshot model carries no open_interest or volume
+    fields at all (verified against 0.44.0: greeks, IV, quotes, trades only),
+    so the SDK read path reports zeros regardless of feed — and the free
+    indicative snapshot serves zeros during regular hours besides. The
+    contract chain, fetched separately via get_option_contracts, carries
+    real open interest. When a leg reports zero, take the chain's number; a
+    real snapshot value always wins. Pure: same inputs, same legs.
+    """
+    from dataclasses import replace as _replace
+    by_symbol = {c.symbol: c for c in contracts}
+    out = []
+    for leg in legs:
+        chain = by_symbol.get(leg.symbol)
+        if leg.open_interest == 0 and chain is not None and chain.open_interest:
+            leg = _replace(leg, open_interest=int(chain.open_interest))
+        out.append(leg)
+    return tuple(out)
+
+
 def implied_volatility(snapshot) -> Optional[float]:
     """ATM implied volatility, for comparison against the GARCH forecast."""
     iv = getattr(snapshot, "implied_volatility", None)

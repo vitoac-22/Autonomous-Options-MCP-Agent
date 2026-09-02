@@ -98,9 +98,13 @@ class GateConfig:
     core_fraction: float = 0.85      # see config.StrategyConfig for the rationale
     convex_fraction: float = 0.15
     max_concentration: float = 0.25      # per underlying, of equity
-    max_spread_pct: float = 0.10         # (ask-bid)/mid on any leg
-    min_open_interest: int = 500
-    min_volume: int = 100
+    max_spread_pct: float = 0.10         # (ask-bid)/mid on any leg, beyond the absolute floor
+    spread_floor_usd: float = 0.05       # a cheap leg may carry this width regardless of percentage
+    # SPY weekly OTM strikes routinely carry 200–400 OI on the strikes the
+    # GARCH expected move selects; 500 vetoed real, tradeable structures
+    # (journal 2026-09-01: short put OI 279 alongside wings at 2k). The dead
+    # strikes this must still block sit at OI 3–34.
+    min_open_interest: int = 250
     min_dte: int = 1
     max_dte: int = 10
     max_abs_net_delta: float = 0.15      # per structure
@@ -224,9 +228,19 @@ def evaluate(proposal: TradeProposal,
         if leg.mid <= 0:
             reasons.append(VetoReason.ILLIQUID)          # also avoids /0 below
             continue
-        if (leg.ask - leg.bid) / leg.mid > config.max_spread_pct:
+        # Relative spread explodes as an option's value approaches zero: a
+        # nickel-wide market on a $0.04 wing is 125% of mid yet perfectly
+        # tradeable. Apply the percentage test only beyond the absolute
+        # floor — the same convention market makers use for cheap contracts.
+        width = leg.ask - leg.bid
+        if width > config.spread_floor_usd and width / leg.mid > config.max_spread_pct:
             reasons.append(VetoReason.WIDE_SPREAD)
-        if leg.open_interest < config.min_open_interest or leg.volume < config.min_volume:
+        # Liquidity is OI-based. Daily volume is absent from every snapshot
+        # source available on the free tier (the SDK model has no volume
+        # field at all), so a volume threshold would veto on missing data
+        # rather than on thin markets. Open interest — sourced from the
+        # contract chain — is the binding filter.
+        if leg.open_interest < config.min_open_interest:
             reasons.append(VetoReason.ILLIQUID)
         dte = (leg.expiry - snapshot.now.date()).days
         if dte < config.min_dte or dte > config.max_dte:
