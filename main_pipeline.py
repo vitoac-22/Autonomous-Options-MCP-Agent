@@ -28,9 +28,10 @@ import pytz
 
 from config import StrategyConfig
 from data_ingestion.alpaca_ingestor import UnderlyingIngestor, OptionsContractResolver
-from data_ingestion.chain_resolver import ChainResolver, LegSpec
+from data_ingestion.chain_resolver import ChainResolver, LegSpec, map_legs_to_contracts
 from data_ingestion.options_market_data import (
     OptionsMarketData, build_legs_via_mcp, prefer_chain_liquidity,
+    MissingGreeksError, adapt_wings_to_feed,
 )
 from quant_core.garch_engine import GarchVolatilityEngine
 from quant_core.options_pricer import OptionsStrategySelector
@@ -128,32 +129,62 @@ if __name__ == '__main__':
             .determine_strategy(dynamic_var)
         logger.info(f"Regime {strategy['regime']} -> {strategy['strategy']}")
 
-        strategy['legs'] = (cartographer.map_iron_condor_strikes()
-                            if strategy['strategy'] == 'iron_condor'
-                            else cartographer.map_straddle_strikes())
         sleeve = "core" if strategy['strategy'] == 'iron_condor' else "convex"
 
-        # 5. One expiry for the whole structure, then every strike inside it.
-        specs = [LegSpec(kind=leg['type'], side=leg['side'],
-                         target_strike=float(leg['target_strike']))
-                 for leg in strategy['legs']]
-
-        final_expiry = (datetime.strptime(cfg.final_expiry, "%Y-%m-%d").date()
-                        if cfg.final_expiry else None)
-        expiry, contracts = ChainResolver(cfg.underlying).resolve_structure(
-            specs, today=today, target_dte=cfg.target_dte,
-            min_dte=cfg.min_dte, max_dte=cfg.max_dte,
-            not_after=final_expiry,
-        )
-        logger.info(f"Expiry {expiry} | " +
-                    " ".join(f"{c.kind[0].upper()}{c.strike:g}" for c in contracts))
-
-        # 6. Real Greeks, quotes and liquidity — no proxies.
+        # 5+6. Structure -> one expiry -> real Greeks, quotes and liquidity.
         #
         # Read through Alpaca's OWN MCP server. Their server reads, ours
         # dispatches, which makes the "MCP or CLI" requirement unambiguous. The
         # SDK stays as a fallback so a transient uvx or subprocess failure
         # degrades rather than killing the cycle.
+        #
+        # The indicative feed sometimes carries no Greeks for the cheapest
+        # far-OTM wing, and inventing a delta is the one thing this codebase
+        # refuses to do. So the condor retries with tighter wings — where the
+        # quotes are richer — before giving up on the cycle.
+        final_expiry = (datetime.strptime(cfg.final_expiry, "%Y-%m-%d").date()
+                        if cfg.final_expiry else None)
+        resolver = ChainResolver(cfg.underlying)
+        strategy['legs'] = (cartographer.map_iron_condor_strikes()
+                            if strategy['strategy'] == 'iron_condor'
+                            else cartographer.map_straddle_strikes())
+        specs = [LegSpec(kind=leg['type'], side=leg['side'],
+                         target_strike=float(leg['target_strike']))
+                 for leg in strategy['legs']]
+        expiry, contracts = resolver.resolve_structure(
+            specs, today=today, target_dte=cfg.target_dte,
+            min_dte=cfg.min_dte, max_dte=cfg.max_dte,
+            not_after=final_expiry,
+        )
+
+        # On the indicative feed, Greeks exist only where quotes are
+        # two-sided: measured live, coverage stops entirely past a $0.00 bid
+        # (SPY Sep-3 calls: Greeks through C779, none from C780 up). The
+        # ideal 1.5-sigma wings often sit in that dead zone, and inventing
+        # their delta is the one thing this codebase refuses to do. Slide
+        # each credit side inward to the nearest covered strikes, keeping at
+        # least one strike of width.
+        if strategy['strategy'] == 'iron_condor':
+            chain = resolver.fetch_chain(today, cfg.min_dte, cfg.max_dte,
+                                         strike_low=spot - 40, strike_high=spot + 40)
+            at_expiry = [c for c in chain if c.expiry == expiry]
+            adapted = adapt_wings_to_feed(
+                at_expiry,
+                [dict(kind=s.kind, side=s.side, target_strike=s.target_strike)
+                 for s in specs],
+                OptionsMarketData().fetch_snapshots,
+            )
+            if any(a["target_strike"] != s.target_strike
+                   for a, s in zip(adapted, specs)):
+                logger.info("Wings adapted to the feed's Greek coverage: " +
+                            " ".join(f"{a['kind'][0].upper()}{a['target_strike']:g}"
+                                     for a in adapted))
+            specs = [LegSpec(kind=a["kind"], side=a["side"],
+                             target_strike=a["target_strike"]) for a in adapted]
+            contracts = map_legs_to_contracts(at_expiry, expiry, specs)
+
+        logger.info(f"Expiry {expiry} | " +
+                    " ".join(f"{c.kind[0].upper()}{c.strike:g}" for c in contracts))
         leg_specs = [(c.symbol, spec.side, 1) for c, spec in zip(contracts, specs)]
         try:
             legs = build_legs_via_mcp(leg_specs)

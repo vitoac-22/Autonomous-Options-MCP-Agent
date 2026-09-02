@@ -219,3 +219,83 @@ def build_legs_via_mcp(specs, client=None) -> list:
             )
         legs.append(build_leg(symbol, side, snapshot, ratio))
     return legs
+
+def adapt_wings_to_feed(chain_contracts, specs, snapshot_fetch) -> list:
+    """Move wings (and if needed shorts) to strikes the feed actually covers.
+
+    On the free indicative tier, Greeks exist only where the quote is
+    two-sided: past a bid of $0.00 coverage stops entirely (measured live:
+    SPY 2026-09-03 calls had Greeks through C779 and none from C780 up). A
+    wing out there is unpriced, and inventing its delta is the one thing
+    this codebase refuses to do. So each credit side keeps its shape but
+    slides inward to the nearest covered strikes, keeping at least one
+    strike of width. `snapshot_fetch(symbols) -> {symbol: snapshot}` is
+    injected so the helper stays testable.
+    """
+    def _has_greeks(sym):
+        snap = fetched.get(sym)
+        g = getattr(snap, "greeks", None) if snap is not None else None
+        return g is not None and getattr(g, "delta", None) is not None
+
+    def _strike(c):
+        return c.strike
+
+    # Probe every candidate strike; the snapshot endpoint caps at 100
+    # symbols per call, so batch and merge.
+    by_kind = {}
+    for c in chain_contracts:
+        by_kind.setdefault(c.kind, []).append(c)
+    probe = [c.symbol for c in chain_contracts]
+    fetched = {}
+    for i in range(0, len(probe), 100):
+        fetched.update(dict(snapshot_fetch(probe[i:i + 100]) or {}))
+
+    adjusted = []
+    for spec in specs:
+        if isinstance(spec, dict):
+            adjusted.append(dict(kind=spec["kind"], side=spec["side"],
+                                 target_strike=float(spec["target_strike"])))
+        else:
+            adjusted.append(dict(kind=spec.kind, side=spec.side,
+                                 target_strike=float(spec.target_strike)))
+
+    for kind, inward in (("call", -1), ("put", +1)):
+        side = [s for s in adjusted if s["kind"] == kind]
+        if len(side) != 2:
+            continue
+        wing = next(s for s in side if s["side"] == "buy")
+        short = next(s for s in side if s["side"] == "sell")
+        # wing is further from spot than short; "inward" moves toward spot.
+        strikes = sorted({c.strike for c in by_kind.get(kind, [])},
+                         reverse=(inward < 0))
+        if not strikes:
+            continue
+        # Candidates from the ideal wing inward, past the short by a margin.
+        lo = min(wing["target_strike"], short["target_strike"]) - 2 * abs(inward)
+        hi = max(wing["target_strike"], short["target_strike"]) + 2 * abs(inward)
+        span = [k for k in strikes if lo - 1 <= k <= hi + 1]
+
+        def _covered(k):
+            sym = next((c.symbol for c in by_kind[kind] if c.strike == k), None)
+            return sym is not None and _has_greeks(sym)
+
+        # Slide the wing inward until covered.
+        path = [k for k in span if (k - wing["target_strike"]) * inward >= 0]
+        new_wing = None
+        for k in sorted(path, key=lambda k: abs(k - wing["target_strike"])):
+            if _covered(k):
+                new_wing = k
+                break
+        if new_wing is None:
+            continue
+        wing["target_strike"] = new_wing
+        # Keep at least one strike of width: slide the short inward too if the
+        # wing overtook it.
+        step = 1.0 if strikes and min(abs(a - b) for a in strikes[:2] for b in strikes[:2] if a != b) else 1.0
+        if (new_wing - short["target_strike"]) * inward < 1:
+            short_path = [k for k in span
+                          if (k - new_wing) * inward >= 1 and _covered(k)]
+            if short_path:
+                short["target_strike"] = min(
+                    short_path, key=lambda k: abs(k - short["target_strike"]))
+    return adjusted

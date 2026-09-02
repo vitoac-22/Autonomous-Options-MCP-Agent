@@ -47,3 +47,18 @@ class TestInstitutionalArchitecture(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class TestWingTightening(unittest.TestCase):
+    """The cartographer can tighten wings for feeds without far-OTM Greeks."""
+
+    def test_wing_multiplier_moves_only_the_wings(self):
+        from quant_core.strike_mapper import VolatilityCartographer
+        wide = VolatilityCartographer(100.0, 0.02, target_dte=7).map_iron_condor_strikes()
+        tight = VolatilityCartographer(100.0, 0.02, target_dte=7) \
+            .map_iron_condor_strikes(wing_mult=1.15)
+        # shorts unchanged
+        self.assertEqual(wide[1]['target_strike'], tight[1]['target_strike'])
+        self.assertEqual(wide[2]['target_strike'], tight[2]['target_strike'])
+        # wings strictly closer to spot
+        self.assertGreater(tight[0]['target_strike'], wide[0]['target_strike'])
+        self.assertLess(tight[3]['target_strike'], wide[3]['target_strike'])
