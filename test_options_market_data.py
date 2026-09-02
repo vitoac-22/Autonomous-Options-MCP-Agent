@@ -18,8 +18,10 @@ import unittest
 from datetime import date
 
 from data_ingestion.options_market_data import (
-    build_leg, parse_occ_symbol, MissingGreeksError,
+    build_leg, parse_occ_symbol, MissingGreeksError, prefer_chain_liquidity,
 )
+from data_ingestion.chain_resolver import Contract
+from quant_core.risk_gates import Leg
 
 
 class FakeGreeks:
@@ -121,3 +123,33 @@ class TestBuildLeg(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPreferChainLiquidity(unittest.TestCase):
+    """Zero snapshot OI is filled from the chain; real values win."""
+
+    def _leg(self, symbol, oi):
+        return Leg(symbol=symbol, kind="put", side="buy", strike=750.0, ratio=1,
+                   delta=-0.05, bid=0.20, ask=0.24, open_interest=oi, volume=0,
+                   expiry=date(2026, 9, 4))
+
+    def _contract(self, symbol, oi):
+        return Contract(symbol=symbol, underlying="SPY", expiry=date(2026, 9, 4),
+                        kind="put", strike=750.0, open_interest=oi)
+
+    def test_zero_oi_is_filled_from_the_chain(self):
+        legs = (self._leg("SPY260904P00750000", 0),)
+        contracts = [self._contract("SPY260904P00750000", 4310)]
+        out = prefer_chain_liquidity(legs, contracts)
+        self.assertEqual(out[0].open_interest, 4310)
+
+    def test_real_snapshot_oi_is_kept(self):
+        legs = (self._leg("SPY260904P00750000", 900),)
+        contracts = [self._contract("SPY260904P00750000", 4310)]
+        out = prefer_chain_liquidity(legs, contracts)
+        self.assertEqual(out[0].open_interest, 900)
+
+    def test_unknown_symbol_passes_through_unchanged(self):
+        legs = (self._leg("SPY260904P00750000", 0),)
+        out = prefer_chain_liquidity(legs, [])
+        self.assertEqual(out[0].open_interest, 0)
